@@ -1,0 +1,58 @@
+name: Generate Release or Prerelease
+
+on:
+  workflow_call:
+    inputs:
+      prerelease:
+        description: "prerelease"
+        required: true
+        default: true
+        type: boolean
+      environment:
+        description: "environment"
+        required: true
+        type: string
+    secrets:
+      token:
+        required: true
+
+jobs:
+  release:
+    permissions:
+      actions: write
+      contents: write
+    environment: ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v3
+
+      - name: Generate Release SHA
+        run: |
+          cat additional/README.md | \
+            awk 'BEGIN{ found=0} /\*\*T-Beam modifications:\*\*/{found=1}  {if (found) print }' | \
+            awk 'BEGIN{ found=0} /## Features/{found=1}  {if (!found) print }' > tmp
+          cat additional/STRATUX.md tmp > RELEASE.md
+          rm -f tmp
+          echo -en "\n\nCommit hash : " >> RELEASE.md
+          echo ${{ github.sha }} >> RELEASE.md
+
+      - name: PreRelease
+        if: ${{ startsWith(inputs.prerelease, true) }}
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: RELEASE.md
+          token: ${{ secrets.token }}
+          files: |
+            SoftRF/*.zip
+          prerelease: true
+
+      - name: Release
+        if: ${{ startsWith(inputs.prerelease, false) }}
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: RELEASE.md
+          token: ${{ secrets.token }}
+          files: |
+            SoftRF/*.zip
+          prerelease: false
