@@ -30,7 +30,7 @@
 
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
-#include <FreeMonoBold9pt7b.h>
+#include <Fonts/FreeMonoBold9pt7b.h>
 
 #include <GxEPD2_BW.h>
 #include <GxEPD2_3C.h>
