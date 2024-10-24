@@ -71,6 +71,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "src/system/SoC.h"
 #include "src/system/OTA.h"
 #include "src/system/Time.h"
 #include "src/driver/LED.h"
@@ -80,18 +81,20 @@
 #include "src/driver/Strobe.h"
 #include "src/driver/EEPROM.h"
 #include "src/driver/Battery.h"
+#include "src/driver/SDcard.h"
 #include "src/protocol/data/MAVLink.h"
 #include "src/protocol/data/GDL90.h"
 #include "src/protocol/data/GNS5892.h"
 #include "src/protocol/data/NMEA.h"
+#include "src/protocol/data/IGC.h"
 #include "src/protocol/data/D1090.h"
-#include "src/system/SoC.h"
 #include "src/driver/WiFi.h"
 #include "src/ui/Web.h"
 #include "src/driver/Baro.h"
 #include "src/TTNHelper.h"
 #include "src/TrafficHelper.h"
 #include "src/Wind.h"
+#include "src/ApproxMath.h"
 
 #if !defined(EXCLUDE_VOICE)
 #if defined(ESP32)
@@ -110,8 +113,8 @@
 #define DEBUG 0
 #define DEBUG_TIMING 0
 
-#define isTimeToDisplay() (millis() - LEDTimeMarker     > 1000)
-#define isTimeToExport()  (millis() - ExportTimeMarker  > 1000)
+#define isTimeToDisplay() (millis() > LEDTimeMarker    + 1000)
+#define isTimeToExport()  (millis() > ExportTimeMarker + 1000)
 
 ufo_t ThisAircraft;
 
@@ -132,6 +135,7 @@ uint32_t LEDTimeMarker = 0;
 uint32_t ExportTimeMarker = 0;
 uint32_t GNSSTimeMarker = 0;
 uint32_t SetupTimeMarker = 0;
+uint32_t IGCTimeMarker = 0;
 
 void setup()
 {
@@ -143,7 +147,7 @@ void setup()
 
   resetInfo = (rst_info *) SoC->getResetInfoPtr();
 
-  Serial.begin(SERIAL_OUT_BR, SERIAL_OUT_BITS);
+  // Serial.begin(SERIAL_OUT_BR, SERIAL_OUT_BITS);   // already done in SOC setup
 
 #if defined(USBD_USE_CDC) && !defined(DISABLE_GENERIC_SERIALUSB)
   /* Let host's USB and console drivers to warm-up */
@@ -158,6 +162,7 @@ void setup()
 
   Serial.println();
   Serial.print(F(SOFTRF_IDENT));
+  Serial.print(" ");
   Serial.print(SoC->name);
   Serial.print(F(" FW.REV: " SOFTRF_FIRMWARE_VERSION " DEV.ID: "));
   Serial.println(String(SoC->getChipId(), HEX));
@@ -171,23 +176,25 @@ void setup()
   Serial.print(F("Free heap size: ")); Serial.println(SoC->getFreeHeap());
   Serial.println(SoC->getResetInfo()); Serial.println("");
 
+  // EEPROM_setup() needs to be done after Serial is working
   EEPROM_setup();
 
-  // can only do these after EEPROM_setup(), to know the settings,
-  // and EEPROM_setup() needs to be done after the Serial setup delays.
-  Buzzer_setup();
-  Strobe_setup();
-
-  SoC->Button_setup();
+  // can only do the setup()s below after EEPROM_setup(), to know the settings,
 
   uint32_t SerialBaud = baudrates[settings->baud_rate];
   if (SerialBaud == 0)    // BAUD_DEFAULT
     SerialBaud = SERIAL_OUT_BR;
+  //if (settings->mode == SOFTRF_MODE_GPSBRIDGE)
+  //  SerialBaud = 9600;
 #if defined(ESP32)
   if (SerialBaud != SERIAL_OUT_BR || settings->altpin0) {
     if (settings->altpin0) {
-      Serial.print("Switching RX pin to ");
-      Serial.println(Serial0AltRxPin);
+      if (ESP32_pin_reserved(Serial0AltRxPin, false, "Alt RX")) {
+          settings->altpin0 = false;
+      } else {
+          Serial.print("Switching RX pin to ");
+          Serial.println(Serial0AltRxPin);
+      }
     }
     if (SerialBaud != SERIAL_OUT_BR) {
       Serial.print("Switching baud rate to ");
@@ -223,6 +230,8 @@ void setup()
     ThisAircraft.addr = settings->aircraft_id;
   } else {
     uint32_t id = SoC->getChipId() & 0x00FFFFFF;
+#if 0
+    // already done in SoC->getChipId():
     /* remap address to avoid overlapping with congested FLARM range */
     if (id >= 0x00DD0000 && id <= 0x00DFFFFF) {
       id += 0x00100000;
@@ -233,25 +242,42 @@ void setup()
     } else if ((id & 0x00FF0000) == 0x005B0000 || (id & 0x00FF0000) == 0x00110000) {
       id += 0x00010000;
     }
+#endif
     ThisAircraft.addr = id;
   }
-Serial.printf("ID_method: %d, settings_ID: %06X, used_ID: %06X\r\n",
+Serial.printf("\r\nID_method: %d, settings_ID: %06X, used_ID: %06X\r\n\r\n",
 settings->id_method, settings->aircraft_id, ThisAircraft.addr);
 
+  SoC->Button_setup();
 
-  hw_info.rf = RF_setup();
-
-  delay(100);
+  // do this before Baro_setup - Wire.begin() happens there
+  hw_info.display = SoC->Display_setup();
 
 Serial.println(F("calling Baro_setup()..."));
+  // do this before SD_setup since this tickles pins 13,2
   hw_info.baro = Baro_setup();
 Serial.println(F("... Baro_setup() returned"));
+
+#if defined(USE_SD_CARD)
+  if (hw_info.model == SOFTRF_MODEL_PRIME_MK2) {
+    // do this before RF_setup() to make sure that:
+    // - SD card get started without interference
+    // - radio chip sets SPI the way it wants it
+    SD_setup();
+    delay(200);
+    FlightLog_setup();
+  }
+#endif
+
+  hw_info.rf = RF_setup();
+  delay(100);
+
+  Buzzer_setup();
+  Strobe_setup();
 
 #if defined(ENABLE_AHRS)
   hw_info.imu = AHRS_setup();
 #endif /* ENABLE_AHRS */
-
-  hw_info.display = SoC->Display_setup();
 
 #if !defined(EXCLUDE_MAVLINK)
   if (settings->mode == SOFTRF_MODE_UAV) {
@@ -273,7 +299,6 @@ Serial.println(F("... Baro_setup() returned"));
 
   SoC->swSer_enableRx(false);
 
-  LED_setup();
   WiFi_setup();
 
   if (SoC->USB_ops) {
@@ -292,6 +317,8 @@ Serial.println(F("... Baro_setup() returned"));
   if (settings->rx1090 == ADSB_RX_GNS5892)
       gns5892_setup();
 #endif
+
+  LED_setup();   // moved here to allow Serial2 to grab pin 4
 
 #if defined(ENABLE_TTN)
   TTN_setup();
@@ -329,6 +356,10 @@ Serial.println(F("... Baro_setup() returned"));
 //Serial.println("calling Buzzer_test()");
   SoC->Buzzer_test(resetInfo->reason);
 
+#if defined(USE_SD_CARD)
+  MD5_test();
+#endif
+
   SoC->post_init();
 
   SoC->WDT_setup();
@@ -344,30 +375,19 @@ Serial.println(F("... Baro_setup() returned"));
 
 void shutparts()
 {
+#if defined(USE_SD_CARD)
+  closeSDlog();
+  closeFlightLog();
+#endif
+#if defined(ESP32)
+  if (AlarmLogOpen)
+    AlarmLog.close();
+#endif
 #if !defined(SERIAL_FLUSH)
 #define SERIAL_FLUSH()       Serial.flush()
 #endif
   SERIAL_FLUSH();
   SoC->swSer_enableRx(false);
-#if 0
-  // this crashed if BLE was active
-  if (SoC->Bluetooth_ops)
-     SoC->Bluetooth_ops->fini();
-  Buzzer_fini();
-  Voice_fini();
-  Strobe_fini();
-  RF_Shutdown();
-  SoC->WDT_fini();
-  NMEA_fini();
-  Web_fini();
-#if defined(ESP32)
-  if (AlarmLogOpen)
-     AlarmLog.close();
-#endif
-  if (SoC->USB_ops)
-     SoC->USB_ops->fini();
-  WiFi_fini();
-#else
 #if defined(ESP32)
   if (AlarmLogOpen)
      AlarmLog.close();
@@ -384,7 +404,6 @@ void shutparts()
      SoC->Bluetooth_ops->fini();
   if (SoC->USB_ops)
      SoC->USB_ops->fini();
-#endif
   if (settings->mode != SOFTRF_MODE_UAV)
     GNSS_fini();
   delay(1000);
@@ -429,67 +448,72 @@ void normal()
   Time_loop();   /* this is where GNSS time data is processed for Legacy protocol */
 
   static uint32_t initial_time = 0;
-  static uint32_t nextprev_ms = 0;
 
   bool validfix = isValidFix();
-  bool newfix = false;
-
-  uint32_t gnss_age;
-  uint32_t thistime_ms;
 
   if (validfix) {
 
-    /* also store a more precise GPS time stamp (millisecond resolution):  */
-    /* - alas gnss.time returns whole seconds not centiseconds as promised */
-    gnss_age = gnss.location.age();
-    thistime_ms = millis() - gnss_age;                   /* = lastCommitTime */
-
-    newfix = (thistime_ms - ThisAircraft.gnsstime_ms > 150   // new data arrived from GNSS
-                   && gnss_age < 3000);
-
     static float prev_lat = 0;
     static float prev_lon = 0;
-
     if (firstfix) {
+        SetupTimeMarker = millis();
         prev_lat = gnss.location.lat();
         prev_lon = gnss.location.lng();
         firstfix = false;
-        SetupTimeMarker = millis();
-        /* start a minute of non-airborne collision warnings */
-    } else if (newfix) {
-        if (fabs(gnss.location.lat()-ThisAircraft.latitude) > 0.15)   // looks like bad data
+        validfix = false;            // wait for next fix
+    } else if (gnss_new_fix) {
+        if (fabs(gnss.location.lat()-prev_lat) > 0.15)   // looks like bad data
             validfix = false;
-        if (fabs(gnss.location.lng()-ThisAircraft.longitude) > 0.25)
+        if (fabs(gnss.location.lng()-prev_lon) > 0.25)
             validfix = false;
+#if defined(ESP32)
+#if defined(USE_SD_CARD)
+#if 0
+        // compute course and compare with what TinyGPS says
+        if (validfix && ThisAircraft.airborne) {
+          float dy = (gnss.location.lat() - prev_lat);
+          float dx = (gnss.location.lng() - prev_lon) * CosLat(ThisAircraft.latitude);
+          float course2 = atan2_approx(dy, dx);
+          float coursediff = fabs(course2-gnss.course.deg());
+          if (coursediff > 180)  coursediff = 360 - coursediff;
+          if (coursediff > 30) {
+              FlightLogComment("CRS gnss.course differs from lat/lon change\r\n");
+          }
+        }
+#endif
+#endif
+#endif
         prev_lat = gnss.location.lat();
         prev_lon = gnss.location.lng();
     }
   }
 
-  if (validfix) {
+  if (validfix) {   // still, after the adjustments above
 
-    if (newfix) {
+    if (gnss_new_fix) {           // set in GNSS.cpp
 
+      gnss_new_fix = false;       // reset until new data arrives
+
+#if 0
       if (settings->rf_protocol != RF_PROTOCOL_LEGACY
        && settings->rf_protocol != RF_PROTOCOL_LATEST
        && settings->rf_protocol != RF_PROTOCOL_OGNTP)
-        ThisAircraft.timestamp = OurTime;
+        ThisAircraft.timestamp = now();     // updated by GNSSTimeSync()
       else
-        ThisAircraft.timestamp = now();
-      ThisAircraft.gnsstime_ms = thistime_ms;
+#endif
+        ThisAircraft.timestamp = OurTime;      // updated in either Time.cpp or RF.cpp
 
-//Serial.printf("new GNSS fix from %d at %d, PPS was %d\r\n", thistime_ms, millis(), ref_time_ms);
-/*
- - On T-Beam get two fixes each second, from about 190 & 280 ms after PPS.
- - And only those two time, each second - why?
- - The additional fix from 280ms is discarded above.
-*/
+      /* store previous course & altitude and timestamp
+          so as to allow computation of turn and climb rates */
+      ThisAircraft.prevtime_ms = ThisAircraft.gnsstime_ms;
+      ThisAircraft.prevcourse = ThisAircraft.course;
+      ThisAircraft.prevheading = ThisAircraft.heading;
+      ThisAircraft.prevaltitude = ThisAircraft.altitude;
 
-//    float lat = ThisAircraft.latitude;
-//    float lon = ThisAircraft.longitude;
+      // the new fix data
+      ThisAircraft.gnsstime_ms = ref_time_ms;          /* last PPS, real or assumed */
       ThisAircraft.latitude = gnss.location.lat();
       ThisAircraft.longitude = gnss.location.lng();
-//    newfix = newfix && (ThisAircraft.latitude != lat || ThisAircraft.longitude != lon);
       ThisAircraft.altitude = gnss.altitude.meters();
       if (ThisAircraft.aircraft_type == AIRCRAFT_TYPE_WINCH) {
         /* for "winch" aircraft type, elevate above ground */
@@ -504,45 +528,27 @@ void normal()
       if (initial_time == 0) {
         initial_time = millis();
       } else if (GNSSTimeMarker == 0) {
-        if (millis() > initial_time + 30000) {
+        if (millis() > initial_time + 30000 || (settings->debug_flags & DEBUG_SIMULATE)) {
           /* 30 sec after first fix */
           GNSSTimeMarker = millis();
         }
       }
 
-      /* if no baro sensor, fill in ThisAircraft.vs with GPS data */
+      /* if no baro sensor, fill in ThisAircraft.vs based on GPS data */
       if (baro_chip == NULL) {
         /* only do this once every 4 seconds */
         static uint32_t time_to_estimate_climb = 0;
-        if (newfix && ThisAircraft.gnsstime_ms > time_to_estimate_climb) {
+        if (ThisAircraft.gnsstime_ms > time_to_estimate_climb) {
           time_to_estimate_climb = ThisAircraft.gnsstime_ms + 4100;
           ThisAircraft.vs = Estimate_Climbrate();
         }
       } /* else it was filled above in Baro_loop() */
 
-      /* After some time has passed, store previous course & altitude
-         and timestamp so as to allow computation of turn and climb rates */
-      static float next_prevcourse=0;
-      static float next_prevheading=0;
-      static float next_prevalt=0;
-      uint32_t now_ms = ThisAircraft.gnsstime_ms;
-      if (newfix && now_ms > ((nextprev_ms + 1400) ^ ((nextprev_ms >> 4) & 0x0FF))) {
-        /* about 1400 ms with some pseudo-random jitter */
-        ThisAircraft.prevtime_ms = nextprev_ms;  /* usually 3-4 sec apart */
-        ThisAircraft.prevcourse = next_prevcourse;
-        ThisAircraft.prevheading = next_prevheading;
-        ThisAircraft.prevaltitude = next_prevalt;
-        nextprev_ms = now_ms;
-        next_prevcourse = ThisAircraft.course;   /* frozen snapshot to be used later */
-        next_prevheading = ThisAircraft.heading;
-        next_prevalt = ThisAircraft.altitude;
-      }
-
 #if 0
 /* check timing */
 #include "WiFi.h"
       static uint32_t msthen = 0;
-      if ((settings->debug_flags & DEBUG_RESVD2) && udp_is_ready) {
+      if ((settings->debug_flags & DEBUG_DEEPER) && udp_is_ready) {
         uint32_t msnow = millis();
         if (msnow > msthen+10000) {
           msthen = msnow;
@@ -569,32 +575,28 @@ void normal()
       }
 #endif /* EXCLUDE_EGM96 */
 
-      /* estimate wind from present and past GNSS data */
-      /* only do this once every 666 milliseconds */
-      static uint32_t time_to_estimate_wind = 0;
-      if (ThisAircraft.gnsstime_ms > time_to_estimate_wind) {
-        Estimate_Wind();
-        time_to_estimate_wind = ThisAircraft.gnsstime_ms + 666;
-      }
+      Estimate_Wind();      // estimate wind from present and past GNSS data
 
       /* generate a random aircraft ID if necessary */
       /* doing it here (after some delay) allows use of millis() as seed for random ID */
-      if (ThisAircraft.addr == 0)
+      if (ThisAircraft.addr == 0)   // ADDR_TYPE_ANONYMOUS - do this once
         generate_random_id();
 
-    }  /* end of if(newfix) */
+    }  /* end of if(new_fix) */
 
-    // check for newly received data, usually returns false
-    // >>> do this here too to ensure no incoming packets are missed
-    rx_tried = true;
-    rx_success = RF_Receive();
-    // if received a packet, postpone transmission until next time around the loop().
+    if ((settings->debug_flags & DEBUG_SIMULATE) == 0) {
 
-      if (!rx_success && RF_Transmit_Ready() && (RF_current_slot != 0 || !relay_waiting)) {
+      // check for newly received data, usually returns false
+      // >>> do this here too to ensure no incoming packets are missed
+      rx_tried = true;
+      rx_success = RF_Receive();
+      // if received a packet, postpone transmission until next time around the loop().
+
+      if (!rx_success && RF_Transmit_Ready() && (!relay_waiting || RF_current_slot != 0)) {
         // Don't bother with the encode() if can't transmit right now
         // Reserve slot 0 for relay message if any relaying is pending
         //   (this only happens once in 5 or more seconds)
-        if (settings->relay != RELAY_ONLY) {
+        if (settings->relay != RELAY_ONLY && leap_seconds_valid()) {
           size_t s = RF_Encode(&ThisAircraft);  // returns 0 if implausible data
           if (s != 0) {
             RF_Transmit(s, true);
@@ -606,6 +608,8 @@ void normal()
       }
       /* - this only actually transmits when some preset random time is reached */
 
+    }
+
   } else if (GNSSTimeMarker) {      /* not validfix but had fix before */
 
     static uint32_t badgps=0;
@@ -616,23 +620,26 @@ void normal()
       initial_time = 0;
       GNSSTimeMarker = 0;
       ThisAircraft.prevtime_ms = 0;
-      nextprev_ms = 0;
     }
   }
 
-  // ensure receiver is re-activated
-  if (!rx_tried || tx_success)
-    rx_success = RF_Receive();
+  if ((settings->debug_flags & DEBUG_SIMULATE) == 0) {
+
+    // ensure receiver is re-activated
+    if (!rx_tried || tx_success)
+      rx_success = RF_Receive();
 
 //if (rx_success)
 //Serial.println("received packet...");
 
 #if DEBUG
-  rx_success = true;
+    rx_success = true;
 #endif
 
-  /* process received data - only if we know where we are */
-  if (rx_success && validfix)  ParseData();
+    /* process received data - only if we know where we are */
+    if (rx_success && validfix)  ParseData();
+
+  }
 
 #if defined(ENABLE_TTN)
   TTN_loop();
@@ -671,6 +678,25 @@ void normal()
     }
     ExportTimeMarker = millis();
   }
+
+#if defined(ESP32)
+#if defined(USE_SD_CARD)
+  if (settings->logflight != FLIGHT_LOG_NONE) {
+    // try and write to the flight log on the SD card between RF time slots (to avoid
+    //  contention for the SPI bus), but after the GNSS fix for the current second
+    uint32_t msnow = millis();
+    uint32_t ms_since_pps = (msnow - ref_time_ms);
+    if (msnow > IGCTimeMarker && ms_since_pps > 270 && ms_since_pps < 370) {
+      if (validfix) {
+          logFlightPosition();
+          if (settings->logflight == FLIGHT_LOG_TRAFFIC)
+              logCloseTraffic();
+      }
+      IGCTimeMarker = ref_time_ms + (1000 << (settings->loginterval)) + 320;
+    }
+  }
+#endif
+#endif
 
   // Handle Air Connect
   NMEA_loop();
@@ -947,10 +973,24 @@ void txrx_test()
 
 #endif /* EXCLUDE_TEST_MODE */
 
+// use this mode to connect to UBlox U-Center utility software to
+// diagnose the GNSS module - should also set baud rate to 9600
+void gpsbridge()
+{
+  if (Serial.available()) {      // If anything comes in from USB,
+    Serial_GNSS_In.write(Serial.read());   // read it and send it out to the GPS.
+  }
+
+  if (Serial_GNSS_In.available()) {     // If anything comes in from the GPS,
+    Serial.write(Serial_GNSS_In.read());   // read it and send it out to USB.
+  }
+}
+
 void loop()
 {
   // Do common RF stuff first
-  RF_loop();
+  if (settings->mode != SOFTRF_MODE_GPSBRIDGE)
+    RF_loop();
 
   switch (settings->mode)
   {
@@ -977,6 +1017,9 @@ void loop()
     watchout();
     break;
 #endif /* EXCLUDE_WATCHOUT_MODE */
+  case SOFTRF_MODE_GPSBRIDGE:
+    gpsbridge();
+    break;
   default:
     normal();
     break;

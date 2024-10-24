@@ -51,7 +51,9 @@ void NMEA_Position(void);
 void NMEA_Out(uint8_t, const char *, size_t, bool);
 void NMEA_Outs(bool, bool, const char *, size_t, bool);
 void NMEA_GGA(void);
-void NMEA_add_checksum(char *, size_t);
+unsigned int NMEA_add_checksum(void);
+
+void sendPFLAJ();
 
 int WiFi_transmit_TCP(const char *buf, size_t size);
 

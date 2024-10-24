@@ -37,8 +37,8 @@
 
 enum
 {
+  OLED_PAGE_SETTINGS,
   OLED_PAGE_RADIO,
-  OLED_PAGE_OTHER,
 #if !defined(EXCLUDE_OLED_BARO_PAGE)
   OLED_PAGE_BARO,
 #endif /* EXCLUDE_OLED_BARO_PAGE */
@@ -84,9 +84,10 @@ static uint32_t prev_acrfts_counter = (uint32_t) -1;
 static uint32_t prev_sats_counter   = (uint32_t) -1;
 static uint32_t prev_uptime_minutes = (uint32_t) -1;
 static int32_t  prev_voltage        = (uint32_t) -1;
-static int8_t   prev_fix            = (uint8_t)  -1;
+static char     prev_fix            = ' ';
 static int8_t   prev_band           = -1;
 static int8_t   prev_type           = -1;
+static int8_t   prev_min            = -1;
 
 #if !defined(EXCLUDE_OLED_BARO_PAGE)
 static int32_t  prev_altitude       = (int32_t)   -10000;
@@ -156,115 +157,14 @@ const char CDR_text[]      = "CDR FPM";
 
 static const uint8_t Dot_Tile[] = { 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00 };
 
-static uint8_t OLED_current_page = OLED_PAGE_RADIO;
+static uint8_t OLED_current_page = OLED_PAGE_SETTINGS;
 static uint8_t page_count        = OLED_PAGE_COUNT;
+static bool showing_message = false;
 
-#if 0
+//byte OLED_setup()
 // done in ESP32.cpp ESP32_Display_setup() instead
 
-byte OLED_setup() {
-
-  byte rval = DISPLAY_NONE;
-  bool oled_probe = false;
-
-  /* SSD1306 I2C OLED probing */
-  Wire.begin();
-  Wire.beginTransmission(SSD1306_OLED_I2C_ADDR);
-  oled_probe = (Wire.endTransmission() == 0);
-  if (oled_probe) {
-    u8x8 = &u8x8_i2c;
-#if defined(CONFIG_IDF_TARGET_ESP32)
-    //u8x8_SetPin(u8x8, U8X8_PIN_I2C_CLOCK, SOC_GPIO_PIN_TBEAM_SCL);
-    //u8x8_SetPin(u8x8, U8X8_PIN_I2C_DATA,  SOC_GPIO_PIN_TBEAM_SDA);
-  } else {
-      Wire1.beginTransmission(SSD1306_OLED_I2C_ADDR);
-      oled_probe = (Wire1.endTransmission() == 0);
-      if (oled_probe) {
-        u8x8 = &u8x8_i2c2;
-        //u8x8_SetPin(u8x8, U8X8_PIN_I2C_CLOCK, TTGO_V2_OLED_PIN_SCL);
-        //u8x8_SetPin(u8x8, U8X8_PIN_I2C_DATA,  TTGO_V2_OLED_PIN_SDA);
-      }
-  }
-#endif
-
-  if (oled_probe) {
-    rval = (hw_info.model == SOFTRF_MODEL_MINI     ? DISPLAY_OLED_HELTEC :
-            hw_info.model == SOFTRF_MODEL_BRACELET ? DISPLAY_OLED_0_49   :
-            DISPLAY_OLED_TTGO);
-  }
-
-  if (u8x8) {
-    u8x8->begin();
-    u8x8->setFont(u8x8_font_chroma48medium8_r);
-
-    switch (rval)
-    {
-#if !defined(EXCLUDE_OLED_049)
-    case DISPLAY_OLED_0_49:
-
-      u8x8->setContrast(255);
-
-      u8x8->draw2x2Glyph(4,  4, SoftRF_text3[0]);
-      u8x8->draw2x2Glyph(6,  4, SoftRF_text3[1]);
-      u8x8->draw2x2Glyph(8,  4, SoftRF_text3[2]);
-      u8x8->draw2x2Glyph(10, 4, SoftRF_text3[3]);
-      u8x8->draw2x2Glyph(6,  6, SoftRF_text3[4]);
-      u8x8->draw2x2Glyph(8,  6, SoftRF_text3[5]);
-
-      delay(2000);
-
-      u8x8->clear();
-      u8x8->draw2x2String( 5, 5, SoftRF_text2);
-
-      delay(2000);
-
-      u8x8->clear();
-      u8x8->draw2x2Glyph(4,  4, SoftRF_text1[0]);
-      u8x8->draw2x2Glyph(6,  4, SoftRF_text1[1]);
-      u8x8->draw2x2Glyph(8,  4, SoftRF_text1[2]);
-      u8x8->draw2x2Glyph(10, 4, SoftRF_text1[3]);
-      u8x8->draw2x2Glyph(6,  6, SoftRF_text1[4]);
-      u8x8->draw2x2Glyph(8,  6, SoftRF_text1[5]);
-
-      OLED_current_page = OLED_049_PAGE_SATS_TX;
-      page_count        = OLED_049_PAGE_COUNT;
-      break;
-#endif /* EXCLUDE_OLED_049 */
-    case DISPLAY_OLED_TTGO:
-    case DISPLAY_OLED_HELTEC:
-    case DISPLAY_OLED_1_3:
-    default:
-      uint8_t shift_y = (hw_info.model == SOFTRF_MODEL_DONGLE ? 1 : 0);
-
-      if (shift_y) {
-        u8x8->draw2x2String( 2, 2 - shift_y, SoftRF_text1);
-        u8x8->drawString   ( 6, 3, SoftRF_text2);
-        u8x8->draw2x2String( 2, 4, SoftRF_text3);
-        u8x8->drawString   ( 2, 6 + shift_y, SOFTRF_FIRMWARE_VERSION);
-        //u8x8->drawString   (11, 6 + shift_y, ISO3166_CC[settings->band]);
-        u8x8->drawString   (10, 6 + shift_y, default_settings_used? DFLT_text : USER_text);
-
-      } else {
-        u8x8->draw2x2String( 2, 2, SoftRF_text1);
-        u8x8->drawString( 1, 4, "ver");
-        u8x8->draw2x2String( 5, 4, SOFTRF_FIRMWARE_VERSION);
-        u8x8->draw2x2String( 1, 6, default_settings_used? DFLT_text : USER_text);
-        u8x8->drawString( 8, 6, "stg");
-
-      }
-
-      break;
-    }
-  }
-
-  OLEDTimeMarker = millis();
-
-  return rval;
-}
-
-#endif
-
-static void OLED_radio()
+static void OLED_settings()
 {
   char buf[16];
   uint32_t disp_value;
@@ -278,7 +178,10 @@ static void OLED_radio()
     snprintf (buf, sizeof(buf), "%06X", ThisAircraft.addr);
     u8x8->draw2x2String(0, 2, buf);
 
-    u8x8->drawString(8, 1, PROTOCOL_text);
+    if (settings->debug_flags & DEBUG_SIMULATE)
+        u8x8->drawString(8, 1, "SIM");
+    else
+        u8x8->drawString(8, 1, PROTOCOL_text);
 
     char c = Protocol_ID[ThisAircraft.protocol][0];
     if (ThisAircraft.protocol == RF_PROTOCOL_LATEST)
@@ -345,7 +248,7 @@ static void OLED_radio()
 #endif
 
   int32_t  voltage = Battery_voltage() > BATTERY_THRESHOLD_INVALID ?
-                              (int) (Battery_voltage() * 10.0) : 0;
+                              (int) (Battery_voltage() * 10.0 + 0.5) : 0;
 
   if (prev_voltage != voltage) {
     if (voltage) {
@@ -364,7 +267,7 @@ static void OLED_radio()
   }
 }
 
-static void OLED_other()
+static void OLED_radio()
 {
   char buf[16];
   uint32_t disp_value;
@@ -375,7 +278,10 @@ static void OLED_other()
 
     u8x8->drawString( 1, 0, ACFTS_text);
     u8x8->drawString( 7, 0, SATS_text);
-    u8x8->drawString(12, 0, FIX_text);
+    if (settings->debug_flags & DEBUG_SIMULATE)
+        u8x8->drawString(12, 0, "SIM");
+    else
+        u8x8->drawString(12, 0, FIX_text);
     u8x8->drawString(0, 4, TX_text);
     if (settings->rx1090) {
         u8x8->drawString(8, 4, RX_text);
@@ -408,14 +314,14 @@ static void OLED_other()
 
     prev_acrfts_counter = (uint32_t) -1;
     prev_sats_counter   = (uint32_t) -1;
-    prev_fix            = (uint8_t)  -1;
+    prev_fix            = ' ';
 
     OLED_display_titles = true;
   }
 
   uint32_t acrfts_counter = Traffic_Count();
   uint32_t sats_counter   = gnss.satellites.value();
-  uint8_t  fix            = (uint8_t) isValidGNSSFix();
+  char fix = (isValidGNSSFix()? (leap_seconds_valid()? '+' : '!') : '-');
 
   if (prev_acrfts_counter != acrfts_counter) {
     disp_value = acrfts_counter > 99 ? 99 : acrfts_counter;
@@ -438,8 +344,7 @@ static void OLED_other()
   }
 
   if (prev_fix != fix) {
-    u8x8->draw2x2Glyph(12, 1, fix > 0 ? '+' : '-');
-//  u8x8->draw2x2Glyph(12, 1, '0' + fix);
+    u8x8->draw2x2Glyph(12, 1, fix);
     prev_fix = fix;
   }
 
@@ -586,55 +491,77 @@ static void OLED_wifi()
 #if !defined(EXCLUDE_OLED_ACFT_PAGE)
 static void OLED_acft()
 {
+  static int prev_dist = -1;
+  static int prev_alt = 9999;
+
   static uint32_t next_ms = 0;
-  if (OLED_display_titles == true && millis() < next_ms)
+  if ((OLED_display_titles == true || prev_min >= 0) && millis() < next_ms)
     return;
-  next_ms = millis() + 2000;
+  next_ms = millis() + 3000;
 
   static int prev_i = -1;
-  static int prev_j = -1;
   if (OLED_display_titles == false)
       prev_i = -1;                   // inspect Container[0] first
   if (prev_i < 0)
       OLED_display_titles = false;  // for transition from no-traffic to traffic
 
-  static int prev_dist = -1;
-
+  char buf[16];
+  int age;
   int i = prev_i + 1;
-  int j = 0;
-  while (i != prev_i) {
-    if (i >= MAX_TRACKING_OBJECTS) {
-        if (prev_i < 0) {
-            u8x8->clear();
-            u8x8->drawString( 2, 4, "NO TRAFFIC");
-            prev_dist = -1;
-            OLED_display_titles = true;   // wait until next_ms
-            return;
-        }
-        i = 0;   // wrap around to the beginning of Container[]
-        j = 0;
-    }
-    if (i == prev_i)         // only one aircraft to show
+  if (i >= MAX_TRACKING_OBJECTS)
+      i = 0;      // wrap around to the beginning of Container[]
+  int j = i;     // remember where we started
+  bool found = false;
+  do {
+    age = OurTime - Container[i].timestamp;
+    if (Container[i].addr != 0 && age < ENTRY_EXPIRATION_TIME) {
+        // an(other) aircraft to show
+        found = true;
         break;
-    if (Container[i].addr && OurTime - Container[i].timestamp < ENTRY_EXPIRATION_TIME) {
-        ++j;
-        break;              // another aircraft to show
     }
     ++i;
-  }
+    if (i >= MAX_TRACKING_OBJECTS)
+        i = 0;   // wrap around to the beginning of Container[]
+  } while (i != j);
 
-  int dist;
-  char buf[16];
+  int minute = gnss.time.minute();
+  if (! found) {     // no aircraft to show
+      prev_i = -1;
+      if (prev_min != minute) {
+          u8x8->clear();
+          u8x8->drawString(5, 1, "UTC");
+          snprintf (buf, sizeof(buf), "%02d:%02d", gnss.time.hour(), minute);
+          u8x8->draw2x2String(2, 2, buf);
+          prev_min = minute;
+          u8x8->drawString(2, 6, "NO TRAFFIC");
+      }
+      prev_dist = -1;
+      prev_alt = 9999;
+      //OLED_display_titles = true;   // wait until next_ms
+      return;
+  }
+  prev_min = -1;
+
+  int dist = (int) (Container[i].distance * 0.001);    // kilometers
+  int rel_alt = (int) (Container[i].alt_diff * 0.01);  // hundreds of meters
 
   if (OLED_display_titles) {
       if (i == prev_i) {
-          dist = (int) (Container[i].distance * 0.001);
           if (dist != prev_dist) {
-              snprintf (buf, sizeof(buf), "%d", dist);
-              u8x8->drawString(7, 5, "   ");
-              u8x8->drawString(7, 5, buf);
+              snprintf (buf, sizeof(buf), "%dkm", dist);
+              u8x8->drawString(1, 7, "     ");
+              u8x8->drawString(1, 7, buf);
               prev_dist = dist;
           }
+          if (rel_alt != prev_alt) {
+              snprintf (buf, sizeof(buf), "%s%dm", (rel_alt < 0 ? "-" : "+"), 100*abs(rel_alt));
+              u8x8->drawString(6, 7, "      ");
+              u8x8->drawString(6, 7, buf);
+              prev_alt = rel_alt;
+          }
+          snprintf (buf, sizeof(buf), "%ds", age);
+          u8x8->drawString( 13, 4, "   ");
+          u8x8->drawString( 13, 4, buf);
           return;         // nothing else needs changing in the display
       }
   }
@@ -643,34 +570,40 @@ static void OLED_acft()
 
   if (!OLED_display_titles) {
       u8x8->clear();
-      u8x8->drawString( 1, 1, "ID:");
-      u8x8->drawString( 1, 3, "TYPE:");
-      u8x8->drawString( 1, 5, "KM:");
-      u8x8->drawString( 1, 7, "PROT:");
-      u8x8->drawString( 14, 6, "#");
+      u8x8->drawString(1, 1, "ID:");
+      u8x8->drawString(1, 3, "TYPE:");
+      u8x8->drawString(1, 5, "PROT:");
+      u8x8->drawString(14, 6, "#");
+      //u8x8->drawString(1, 7, "KM:");
       prev_dist = -1;
-      prev_j = -1;
+      prev_alt = 9999;
       OLED_display_titles = true;
   }
 
-  if (j != prev_j) {
-      snprintf (buf, sizeof(buf), "%d", j);
-      u8x8->drawString( 15, 6, buf);
-      prev_j = j;
-  }
+  snprintf (buf, sizeof(buf), "%d", i);
+  u8x8->drawString( 15, 6, buf);
 
-  dist = (int) (Container[i].distance * 0.001);
+  snprintf (buf, sizeof(buf), "%ds", age);
+  u8x8->drawString( 13, 4, "   ");
+  u8x8->drawString( 13, 4, buf);
+
   if (dist != prev_dist) {
-      snprintf (buf, sizeof(buf), "%d", dist);
-      u8x8->drawString(7, 5, "   ");
-      u8x8->drawString(7, 5, buf);
+      snprintf (buf, sizeof(buf), "%dkm", dist);
+      u8x8->drawString(1, 7, "     ");
+      u8x8->drawString(1, 7, buf);
       prev_dist = dist;
+  }
+  if (rel_alt != prev_alt) {
+      snprintf (buf, sizeof(buf), "%s%dm", (rel_alt < 0 ? "-" : "+"), 100*abs(rel_alt));
+      u8x8->drawString(6, 7, "      ");
+      u8x8->drawString(6, 7, buf);
+      prev_alt = rel_alt;
   }
 
   snprintf (buf, sizeof(buf), "%06X", Container[i].addr);
   u8x8->drawString(7, 1, buf);
   u8x8->drawString(7, 3, aircraft_type_lbl[Container[i].aircraft_type]);
-  u8x8->drawString(7, 7, Protocol_ID[Container[i].protocol]);
+  u8x8->drawString(7, 5, Protocol_ID[Container[i].protocol]);
 }
 #endif /* EXCLUDE_OLED_ACFT_PAGE */
 
@@ -893,6 +826,9 @@ void OLED_049_func()
 
 void OLED_loop()
 {
+  if (showing_message)
+      return;
+
   if (u8x8) {
     if (isTimeToOLED()) {
 #if !defined(EXCLUDE_OLED_049)
@@ -902,8 +838,8 @@ void OLED_loop()
 #endif /* EXCLUDE_OLED_049 */
         switch (OLED_current_page)
         {
-        case OLED_PAGE_OTHER:
-          OLED_other();
+        case OLED_PAGE_RADIO:
+          OLED_radio();
           break;
 #if !defined(EXCLUDE_OLED_BARO_PAGE)
         case OLED_PAGE_BARO:
@@ -920,9 +856,9 @@ void OLED_loop()
           OLED_acft();
           break;
 #endif /* EXCLUDE_OLED_ACFT_PAGE */
-        case OLED_PAGE_RADIO:
+        case OLED_PAGE_SETTINGS:
         default:
-          OLED_radio();
+          OLED_settings();
           break;
         }
 
@@ -980,7 +916,14 @@ void OLED_msg(const char *msg1, const char *msg2)
         u8x8->draw2x2String(1, 4, msg2);
       break;
     }
+    showing_message = true;
   }
+}
+
+void OLED_no_msg()
+{
+    showing_message = false;
+    OLED_display_titles = false;   // redraw same page from before message
 }
 
 void OLED_info1()
@@ -1119,6 +1062,14 @@ void OLED_info3(int acfts, char *reg, char *mam, char *cn)
 void OLED_Next_Page()
 {
   if (u8x8) {
+
+    if (showing_message) {
+        //Serial.println("leaving OLED message mode");
+        showing_message = false;       // escape message mode
+        OLED_display_titles = false;   // redraw same page from before message
+        return;
+    }
+
     OLED_current_page = (OLED_current_page + 1) % page_count;
 
 #if !defined(EXCLUDE_OLED_BARO_PAGE)
@@ -1139,6 +1090,7 @@ void OLED_Next_Page()
 #endif /* EXCLUDE_OLED_049 */
 
     OLED_display_titles = false;
+    prev_min = -1;
   }
 }
 

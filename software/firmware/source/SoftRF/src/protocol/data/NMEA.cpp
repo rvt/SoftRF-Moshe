@@ -28,12 +28,20 @@
 #include "../../driver/RF.h"
 #include "../../system/SoC.h"
 // which does #include "../../SoftRF.h"
+#include "../../system/Time.h"
 #include "../../driver/WiFi.h"
 #include "../../driver/EEPROM.h"
 #include "../../driver/RF.h"
 #include "../../driver/Battery.h"
 #include "../../driver/Baro.h"
+#if defined(ESP32)
+#include "../../driver/OLED.h"
+#include "../../driver/Strobe.h"
+#endif
 #include "../../driver/Bluetooth.h"
+#if defined(USE_SD_CARD)
+#include "../../driver/SDcard.h"
+#endif
 #include "../../TrafficHelper.h"
 
 #define ADDR_TO_HEX_STR(s, c) (s += ((c) < 0x10 ? "0" : "") + String((c), HEX))
@@ -116,7 +124,7 @@ static int WiFi_receive_TCP(char* RXbuffer, int RXbuffer_size)
             i++;
         }
         RXbuffer[i] = '\0';
-//if ((settings->nmea_d || settings->nmea2_d)  && (settings->debug_flags & DEBUG_FAKEFIX)) {
+//if ((settings->nmea_d || settings->nmea2_d)  && (settings->debug_flags & DEBUG_DEEPER)) {
 //Serial.print("TCP>");
 //Serial.print(RXbuffer);
 //}
@@ -129,7 +137,7 @@ static int WiFi_receive_TCP(char* RXbuffer, int RXbuffer_size)
 static void WiFi_flush_TCP()
 {
 static bool db;
-//db = ((settings->nmea_d || settings->nmea2_d) && (settings->debug_flags & DEBUG_FAKEFIX));
+//db = ((settings->nmea_d || settings->nmea2_d) && (settings->debug_flags & DEBUG_DEEPER));
     if (client.connected())
     {
 //if (db && client.available())
@@ -266,36 +274,74 @@ static char *ltrim(char *s)
   return s;
 }
 
-void NMEA_add_checksum(char *buf, size_t limit)
+unsigned int NMEA_add_checksum()
 {
-  size_t sentence_size = strlen(buf);
+//Serial.print("NMEA_add_checksum(): '");
+//Serial.print(NMEABuffer);
 
-  //calculate the checksum
+  //calculate the checksum - get sentence length as a side effect
+  unsigned int n;
+  char c;
   unsigned char cs = 0;
-  for (unsigned int n = 1; n < sentence_size - 1; n++) {
-    cs ^= buf[n];
+  for (n = 1; n < sizeof(NMEABuffer) - 5; n++) {
+    c = NMEABuffer[n];
+    if (c == '*')
+        break;
+    if (c == '\0')
+        break;
+    cs ^= c;
   }
+//Serial.print("' - n:");
+//Serial.println(n);
+  if (c == '*') {
+      char *csum_ptr = &NMEABuffer[n+1];
+      snprintf_P(csum_ptr, 5, PSTR("%02X\r\n"), cs);
+//Serial.print("checksum added: ");
+//Serial.print(NMEABuffer);
+      return (n + 5);
+  }
+  return 0;
+}
 
-  char *csum_ptr = buf + sentence_size;
-  snprintf_P(csum_ptr, limit, PSTR("%02X\r\n"), cs);
+void sendPFLAJ()
+{
+    snprintf_P(NMEABuffer, sizeof(NMEABuffer), PSTR("$PFLAJ,A,%d,%d,0*"),
+                 ThisAircraft.airborne, ThisAircraft.airborne);
+    int nmealen = NMEA_add_checksum();
+    NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, nmealen, false);
 }
 
 // send self-test and version sentences out, imitating a FLARM
-void sendPFLAV()
+void sendPFLAV(bool nowait)
 {
-  static uint32_t whensend = 28000;
+  static uint32_t whensent = 0;
+  if (!nowait) { 
+      if (OurTime == whensent)
+          return;                 // only continue once per second
+      whensent = OurTime;
+      if (OurTime < 1000000)
+          return;
+      if ((((uint32_t) OurTime) & 0x1F) != 7)   // send once in 32 seconds
+          return;
+  }
+  uint32_t timebits = (((uint32_t) OurTime) & 0x60);
   if (settings->nmea_l || settings->nmea2_l) {
-    uint32_t millisnow = millis();
-    if (millisnow > whensend) {
-      snprintf_P(NMEABuffer, sizeof(NMEABuffer), PSTR("$PFLAE,A,0,0*"));
-      NMEA_add_checksum(NMEABuffer, sizeof(NMEABuffer) - 16);
-      NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, strlen(NMEABuffer), false);
-      snprintf_P(NMEABuffer, sizeof(NMEABuffer), PSTR("$PFLAV,A,2.4,7.20,%s-%s*"),
-                   SOFTRF_IDENT, SOFTRF_FIRMWARE_VERSION);  // our version in obstacle db text field
-      NMEA_add_checksum(NMEABuffer, sizeof(NMEABuffer) - 48);
-      NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, strlen(NMEABuffer), false);
-      whensend = millisnow + 73000;
+    if (nowait || timebits == 0x20) {
+      uint32_t pps = SoC->get_PPS_TimeMarker();
+      snprintf_P(NMEABuffer, sizeof(NMEABuffer), PSTR("$PFLAE,A,0,0%s*"),
+          (pps > 0 && millis()-pps < 2000)? ",PPS received" : "");
+      int nmealen = NMEA_add_checksum();
+      NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, nmealen, false);
     }
+    if (nowait || timebits == 0x60) {
+      snprintf_P(NMEABuffer, sizeof(NMEABuffer), PSTR("$PFLAV,A,2.4,7.24,%s-%s*"),
+                   SOFTRF_IDENT, SOFTRF_FIRMWARE_VERSION);  // our version in obstacle db text field
+      int nmealen = NMEA_add_checksum();
+      NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, nmealen, false);
+    }
+//  if (nowait || timebits == 0x00 || timebits == 0x40) {    // every 64 seconds
+//      sendPFLAJ();
+//  }
   }
 }
 
@@ -321,16 +367,27 @@ void NMEA_setup()
     if (settings->rx1090 == ADSB_RX_GNS5892) {
         Serial2Baud = GNS5892_BAUDRATE;
         Serial2BufSize = GNS5892_INPUT_BUF_SIZE;
+        Serial.println(F("Using Serial2 for ADS-B module"));
     }
-    if (Serial2Baud != 0) {
-        Serial2.setRxBufferSize(Serial2BufSize);
-        Serial2.begin(Serial2Baud, SERIAL_8N1, Serial2RxPin, Serial2TxPin, settings->invert2);
-        has_serial2 = true;
-        Serial.printf("Serial2 started at baud rate %d, logic:%d\r\n",
-               Serial2Baud, settings->invert2);
-    } else {
+
+    if (Serial2Baud == 0 || settings->gnss_pins == EXT_GNSS_39_4) {
         // note BAUD_DEFAULT here means Serial2 disabled, not 38400
         Serial.println(F("Serial2 NOT started"));
+    } else {
+        Serial2.setRxBufferSize(Serial2BufSize);
+        uint8_t rx_pin = Serial2RxPin;   // VN
+        if (hw_info.revision < 8)
+            rx_pin = Serial0AltRxPin;    // VP
+        const char *label = "Aux Serial";
+        if (settings->rx1090)
+            label = "ADS-B Module";
+        if (ESP32_pin_reserved(rx_pin, false, label) == false
+         && ESP32_pin_reserved(Serial2TxPin, false, label) == false) {
+            Serial2.begin(Serial2Baud, SERIAL_8N1, rx_pin, Serial2TxPin, settings->invert2);
+            has_serial2 = true;
+            Serial.printf("Serial2 started on pins %d,%d at baud rate %d, logic:%d\r\n",
+               rx_pin, Serial2TxPin, Serial2Baud, settings->invert2);
+        }
     }
   }
 #endif
@@ -449,13 +506,15 @@ void NMEA_setup()
   memset(&nmealib_buf, 0, sizeof(nmealib_buf));
 #endif /* USE_NMEALIB */
 
+  memset(GPGGA_Copy, 0, sizeof(GPGGA_Copy));
+
   PGRMZ_TimeMarker = millis();
 
 #if defined(ENABLE_AHRS)
   RPYL_TimeMarker = millis();
 #endif /* ENABLE_AHRS */
 
-  sendPFLAV();
+  sendPFLAV(true);
 }
 
 void NMEA_Out(uint8_t dest, const char *buf, size_t size, bool nl)
@@ -792,7 +851,7 @@ void NMEA_loop()
 
   NMEA_Source = DEST_NONE;  // for all internal messages sent below
 
-  sendPFLAV();
+  sendPFLAV(false);
 
   if ((settings->nmea_s || settings->nmea2_s)
       && ThisAircraft.pressure_altitude != 0.0 && isTimeToPGRMZ()) {
@@ -805,8 +864,8 @@ void NMEA_loop()
     snprintf_P(NMEABuffer, sizeof(NMEABuffer), PSTR("$PGRMZ,%d,f,%c*"),
                altitude, isValidGNSSFix() ? '3' : '1'); /* feet , 3D fix */
 
-    NMEA_add_checksum(NMEABuffer, sizeof(NMEABuffer) - strlen(NMEABuffer));
-    NMEA_Outs(settings->nmea_s, settings->nmea2_s, NMEABuffer, strlen(NMEABuffer), false);
+    unsigned int nmealen = NMEA_add_checksum();
+    NMEA_Outs(settings->nmea_s, settings->nmea2_s, NMEABuffer, nmealen, false);
 
 #if !defined(EXCLUDE_LK8EX1)
     char str_Vcc[6];
@@ -818,8 +877,8 @@ void NMEA_loop()
             constrain((int) Baro_temperature(), -99, 98),                  /* deg. C */
             str_Vcc);
 
-    NMEA_add_checksum(NMEABuffer, sizeof(NMEABuffer) - strlen(NMEABuffer));
-    NMEA_Outs(settings->nmea_s, settings->nmea2_s, NMEABuffer, strlen(NMEABuffer), false);
+    nmealen = NMEA_add_checksum();
+    NMEA_Outs(settings->nmea_s, settings->nmea2_s, NMEABuffer, nmealen, false);
 
 #endif /* EXCLUDE_LK8EX1 */
 
@@ -1111,8 +1170,8 @@ void NMEA_Export()
             course, speed, ltrim(str_climb_rate), fop->aircraft_type
             PFLAA_EXT1_ARGS );
 #endif
-         NMEA_add_checksum(NMEABuffer, sizeof(NMEABuffer) - strlen(NMEABuffer));
-         NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, strlen(NMEABuffer), false);
+         unsigned int nmealen = NMEA_add_checksum();
+         NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, nmealen, false);
 
         //}  /* done skipping the HP object */
 
@@ -1152,9 +1211,22 @@ void NMEA_Export()
 
     int gps_status = (ThisAircraft.airborne ? GNSS_STATUS_3D_MOVING : GNSS_STATUS_3D_GROUND);
     int tx_status = (settings->txpower == RF_TX_POWER_OFF ? TX_STATUS_OFF : TX_STATUS_ON);
-    if (! has_Fix) {
-        gps_status = GNSS_STATUS_NONE;
-        tx_status = TX_STATUS_OFF;
+#if defined(ESP32)
+    if (do_alarm_demo) {
+        if ((millis() - SetupTimeMarker) < (1000*STROBE_INITIAL_RUN)) {
+            gps_status = GNSS_STATUS_3D_MOVING;
+            HP_alarm_level = ALARM_LEVEL_IMPORTANT;
+        } else {
+            OLED_no_msg();
+            do_alarm_demo = false;  // turn demo off here, in case buzzer is set to OFF
+        }
+    } else
+#endif
+    {
+        if (! has_Fix) {
+            gps_status = GNSS_STATUS_NONE;
+            tx_status = TX_STATUS_OFF;
+        }
     }
     if (HP_addr) {
         if (HP_stealth && HP_alarm_level <= ALARM_LEVEL_CLOSE) {
@@ -1169,6 +1241,12 @@ void NMEA_Export()
                 power_status, HP_alarm_level, rel_bearing,
                 ALARM_TYPE_AIRCRAFT, HP_alt_diff, (int) HP_distance, HP_addr
                 PFLAU_EXT1_ARGS );
+    } else if (do_alarm_demo) {
+        // simulate an aircraft
+        snprintf_P(NMEABuffer, sizeof(NMEABuffer),
+                PSTR("$PFLAU,1,1,%d,1,%d,0,2,0,500,AAAAAA" PFLAU_EXT1_FMT "*"),
+                GNSS_STATUS_3D_MOVING, (ALARM_LEVEL_IMPORTANT - 1)
+                PFLAU_EXT1_ARGS );
     } else {
         snprintf_P(NMEABuffer, sizeof(NMEABuffer),
                 PSTR("$PFLAU,0,%d,%d,%d,%d,,0,,," PFLAU_EXT1_FMT "*"),
@@ -1177,8 +1255,19 @@ void NMEA_Export()
                 PFLAU_EXT1_ARGS );
     }
 
-    NMEA_add_checksum(NMEABuffer, sizeof(NMEABuffer) - strlen(NMEABuffer));
-    NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, strlen(NMEABuffer), false);
+    unsigned int nmealen = NMEA_add_checksum();
+    NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, nmealen, false);
+
+//#if defined(USE_SD_CARD)
+#if 0
+if (settings->debug_flags) {
+    nmealen -= 2;   // overwrite existing \r\n
+    snprintf_P(NMEABuffer+nmealen, sizeof(NMEABuffer)-nmealen, " at %02d:%02d:%02d\r\n",
+         gnss.time.hour(), gnss.time.minute(), gnss.time.second());
+    Serial.print(NMEABuffer);
+    SD_log(NMEABuffer);
+}
+#endif
 
     static int beatcount = 0;
     if (++beatcount < 10)
@@ -1187,14 +1276,14 @@ void NMEA_Export()
 
 #if !defined(EXCLUDE_SOFTRF_HEARTBEAT)
     snprintf_P(NMEABuffer, sizeof(NMEABuffer),
-            PSTR("$PSRFH,%06X,%d,%d,%d,%d,%d*"),
+            PSTR("$PSRFH,%06X,%d,%d,%d,%d,%d,%d*"),
             ThisAircraft.addr,settings->rf_protocol,
-            rx_packets_counter,tx_packets_counter,(int)(voltage*100),ESP.getFreeHeap());
-    NMEA_add_checksum(NMEABuffer, sizeof(NMEABuffer) - strlen(NMEABuffer));
-    NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, strlen(NMEABuffer), false);
+            rx_packets_counter,tx_packets_counter,millis(),(int)(voltage*100),ESP.getFreeHeap());
+    nmealen = NMEA_add_checksum();
+    NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, nmealen, false);
 #endif /* EXCLUDE_SOFTRF_HEARTBEAT */
 
-    if (settings->debug_flags & DEBUG_RESVD1) {
+    if (settings->debug_flags & DEBUG_DEEPER) {
         Serial.printf("ThisAircraft.baro_alt_diff = %.0f\r\n", ThisAircraft.baro_alt_diff);
         Serial.printf("OthAcfts Avg baro_alt_diff = %.0f\r\n", average_baro_alt_diff);
     }
@@ -1331,7 +1420,8 @@ void NMEA_GGA()
                                         NMEALIB_SENTENCE_GPGGA );
 
   if (gen_sz) {
-    strncpy(GPGGA_Copy, nmealib_buf.buffer, gen_sz);  // for traffic alarm logging
+    //strncpy(GPGGA_Copy, nmealib_buf.buffer, gen_sz);  // for traffic alarm logging
+    //GPGGA_Copy[gen_sz] = '\0';
     NMEA_Outs(settings->nmea_g, settings->nmea2_g, nmealib_buf.buffer, gen_sz, false);
   }
 }
@@ -1351,13 +1441,13 @@ void NMEA_GGA()
 
 void nmea_cfg_send()
 {
-    NMEA_add_checksum(NMEABuffer, sizeof(NMEABuffer) - strlen(NMEABuffer));
+    unsigned int nmealen = NMEA_add_checksum();
 #if defined(USE_NMEA_CFG)
     uint8_t dest = NMEA_Source;           // answer the config source
 #else
     uint8_t dest = settings->nmea_out;    // is nmea_cfg_send() called?
 #endif /* USE_NMEA_CFG */
-    NMEA_Out(dest, NMEABuffer, strlen(NMEABuffer), false);
+    NMEA_Out(dest, NMEABuffer, nmealen, false);
 }
 
 static void nmea_cfg_restart()

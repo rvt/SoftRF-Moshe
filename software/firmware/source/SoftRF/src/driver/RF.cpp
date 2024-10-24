@@ -39,6 +39,7 @@ byte RxBuffer[MAX_PKT_SIZE] __attribute__((aligned(sizeof(uint32_t))));
 
 time_t RF_time;
 uint8_t RF_current_slot = 0;
+uint8_t RF_current_chan = 0;
 
 uint32_t TxTimeMarker = 0;
 uint32_t TxEndMarker  = 0;
@@ -270,20 +271,21 @@ byte RF_setup(void)
 #endif /* USE_OGN_RF_DRIVER */
   }
 
-  /* "AUTO" freq. will set the plan upon very first valid GNSS fix */
-  if (settings->band == RF_BAND_AUTO) {
-    /* Supersede EU plan with UK when PAW is selected */
+  /* "AUTO" and "UK" freqs now mapped to EU */
+  if (settings->band == RF_BAND_AUTO)
+      settings->band == RF_BAND_EU;
+  if (settings->band == RF_BAND_UK)
+      settings->band == RF_BAND_EU;
+  /* Supersede EU plan with UK when PAW is selected */
     if (rf_chip                &&
 #if !defined(EXCLUDE_NRF905)
         rf_chip != &nrf905_ops &&
 #endif
-        settings->rf_protocol == RF_PROTOCOL_P3I) {
-      RF_FreqPlan.setPlan(RF_BAND_UK);
-    }
-  } else {
+        settings->band == RF_BAND_EU
+            && settings->rf_protocol == RF_PROTOCOL_P3I)
+      settings->band == RF_BAND_UK;
 
-    RF_FreqPlan.setPlan(settings->band);
-  }
+  RF_FreqPlan.setPlan(settings->band, settings->rf_protocol);
 
   if (rf_chip) {
     rf_chip->setup();
@@ -366,7 +368,9 @@ void RF_SetChannel(void)
       ref_time_ms = pps_btime_ms;
     } else {
       uint32_t last_RMC_Commit = now_ms - gnss.date.age();
-      time_corr_neg = gnss_chip ? gnss_chip->rmc_ms : 100;
+      time_corr_neg = 100;
+      if (gnss_chip)
+          time_corr_neg = gnss_chip->rmc_ms;
       ref_time_ms = last_RMC_Commit - time_corr_neg;
     }
 
@@ -430,7 +434,8 @@ void RF_loop()
     if (RF_FreqPlan.Plan == RF_BAND_AUTO) {
       if (ThisAircraft.latitude || ThisAircraft.longitude) {
         RF_FreqPlan.setPlan((int32_t)(ThisAircraft.latitude  * 600000),
-                            (int32_t)(ThisAircraft.longitude * 600000));
+                            (int32_t)(ThisAircraft.longitude * 600000),
+                            settings->rf_protocol);
         RF_ready = true;
       }
     } else {
@@ -456,24 +461,24 @@ void RF_loop()
   /* internal state variables to save CPU cycles */
   static uint32_t RF_OK_until = 0;
   //static uint8_t RF_current_slot = 0;  - now an external variable
-  static uint8_t current_chan = 0;
+  // static uint8_t RF_current_chan = 0;  - now an external variable
 
   uint32_t now_ms = millis();
   if (now_ms < RF_OK_until) {   /* channel already computed */
     if (rf_chip)
-      rf_chip->channel(current_chan);
+      rf_chip->channel(RF_current_chan);
     return;
   }
 
-  RF_time = OurTime;    // can use now()?
+  RF_time = OurTime;      // may have been updated in Time_loop since last RF_loop
 
-  int ms_since_pps = now_ms - ref_time_ms;
-  if (ms_since_pps < 0) {   /* should not happen */
+  if (now_ms < ref_time_ms) {   /* should not happen */
     --OurTime;
     ref_time_ms -= 1000;
     return;
   }
-  if (ms_since_pps >= 1300) {   /* should not happen */
+  uint32_t ms_since_pps = now_ms - ref_time_ms;
+  if (ms_since_pps >= 1300) {   // should not happen since Time_loop takes care of this
     ++OurTime;
     ref_time_ms += 1000;
     return;
@@ -500,13 +505,20 @@ void RF_loop()
     RF_current_slot = 1;
     /* channel does _NOT_ change at PPS rollover in middle of slot 1 */
     RF_OK_until = slot_base_ms + 1300;
-    TxTimeMarker = slot_base_ms + 800 + SoC->random(0, 395);
-    TxEndMarker  = slot_base_ms + 1195;
+    if ((RF_time & 0x0F) == 0xF) {
+        // some other receivers may mis-decrypt packets sent after the next PPS
+        // so squeeze the transmissions into the pre-PPS half of the slot
+        TxTimeMarker = slot_base_ms + 800 + SoC->random(0, 195);
+        TxEndMarker  = slot_base_ms + 995;
+    } else {
+        TxTimeMarker = slot_base_ms + 800 + SoC->random(0, 395);
+        TxEndMarker  = slot_base_ms + 1195;
+    }
 
   } else { /* shouldn't happen */
 
     RF_current_slot = 0;
-    RF_OK_until = ref_time_ms + 1400;
+    RF_OK_until = ref_time_ms + 1300;
     TxTimeMarker = RF_OK_until;  /* do not transmit for now */
     TxEndMarker  = RF_OK_until;
 
@@ -514,13 +526,13 @@ void RF_loop()
 
   uint8_t OGN = (settings->rf_protocol == RF_PROTOCOL_OGNTP ? 1 : 0);
 
-  current_chan = RF_FreqPlan.getChannel((time_t)RF_time, RF_current_slot, OGN);
+  RF_current_chan = RF_FreqPlan.getChannel((time_t)RF_time, RF_current_slot, OGN);
 
   if (rf_chip)
-    rf_chip->channel(current_chan);
+    rf_chip->channel(RF_current_chan);
 
 //Serial.printf("Chan %d, Slot %d at PPS+%d ms, tx ok %d - %d, gd to %d\r\n",
-//current_chan, RF_current_slot, ms_since_pps, TxTimeMarker, TxEndMarker, RF_OK_until);
+//RF_current_chan, RF_current_slot, ms_since_pps, TxTimeMarker, TxEndMarker, RF_OK_until);
 }
 
 size_t RF_Encode(ufo_t *fop)
@@ -577,6 +589,17 @@ bool RF_Transmit(size_t size, bool wait)
         /* do not set next transmit time here - it is done in RF_loop() */
 //Serial.println(">");
 //Serial.printf("> tx at %d s + %d ms\r\n", OurTime, millis()-ref_time_ms);
+#if 0
+if (settings->debug_flags & DEBUG_LEGACY) {
+uint32_t ms = millis();
+if (ms < ref_time_ms)  ms = 0;
+else   ms -= ref_time_ms;
+if (ms > 999)  ms = 999;
+Serial.printf("> tx %d s %3d ms (%02d:%02d) timebits %2d chan %2d alt %d geosep %d\r\n",
+OurTime, ms, (int)gnss.time.minute(), (int)gnss.time.second(), (RF_time & 0x0F), RF_current_chan,
+  (int)ThisAircraft.altitude, (int)ThisAircraft.geoid_separation);
+}
+#endif
         return true;
       }
 

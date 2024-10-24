@@ -49,6 +49,7 @@ typedef struct gnss_chip_ops_struct {
   uint16_t  rmc_ms;
 } gnss_chip_ops_t;
 
+#define ENABLE_GNSS_STATS
 #if defined(ENABLE_GNSS_STATS)
 typedef struct gnss_stat_struct {
   unsigned long gga_count;
@@ -67,10 +68,17 @@ void GNSS_fini       (void);
 void GNSSTimeSync    (void);
 void PickGNSSFix     (void);
 int LookupSeparation (float, float);
+bool leap_seconds_valid(void);
 
 extern const gnss_chip_ops_t *gnss_chip;  // added
 extern TinyGPSPlus gnss;
 extern volatile unsigned long PPS_TimeMarker;
 extern const char *GNSS_name[];
+extern bool gnss_needs_reset;
+extern bool gnss_new_fix;
+extern bool gnss_new_time;
+extern bool gnss_time_from_rmc;
+extern uint32_t latest_Commit_Time;
+extern uint32_t GNSSTimeSyncMarker;
 
 #endif /* GNSSHELPER_H */

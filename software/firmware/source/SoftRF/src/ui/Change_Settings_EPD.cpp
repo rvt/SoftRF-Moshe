@@ -109,16 +109,17 @@ set_entry directions[] = {
 set_entry relays[] = {
   {RELAY_OFF, "None"},
   {RELAY_LANDED, "Landed"},
-  {RELAY_ALL, "All"},
-  {RELAY_ONLY, "Only"},
+//{RELAY_ALL, "ADS-B"},
+//{RELAY_ONLY, "Only"},
   {-1, NULL}
 };
 
 set_entry idtypes[] = {
-  {ADDR_TYPE_RANDOM,    "Random"},
-  {ADDR_TYPE_ICAO,      "ICAO"},
   {ADDR_TYPE_FLARM,     "Device"},
+  {ADDR_TYPE_ICAO,      "ICAO"},
   {ADDR_TYPE_ANONYMOUS, "Anonymous"},
+  {ADDR_TYPE_RANDOM,    "Random"},
+  {-1, NULL}
 };
 
 set_entry hexdigits[] = {
@@ -212,9 +213,8 @@ page pages[] = {
 
 int curpage = 0;
 
-void EPD_chgconf_next() { }
-
 static bool chgconf_initialized = false;
+static bool chgconf_changed = false;
 
 void get_settings()
 {
@@ -238,6 +238,7 @@ void get_settings()
     decision = 0;  // cancel
     curpage = 1;   // actypes
     chgconf_initialized = true;
+    chgconf_changed = true;
 }
 
 void EPD_chgconf_save()
@@ -273,7 +274,6 @@ void EPD_chgconf_page()
     if (curpage == 0) {  // pages[curpage].indexvar == &decision
         if (decision == DECISION_CANCEL) {
             chgconf_initialized = false;
-            // EPD_prev_view = VIEW_CHANGE_SETTINGS;
             EPD_view_mode = VIEW_MODE_CONF;
             conf_initialized = false;
             return;
@@ -286,6 +286,7 @@ void EPD_chgconf_page()
     ++curpage;
     if (pages[curpage].indexvar == NULL)
         curpage = 0;
+    chgconf_changed = true;
 //Serial.print("curpage: ");
 //Serial.println(curpage);
 }
@@ -294,7 +295,7 @@ void EPD_chgconf_page()
  * Scroll to the next value available for this item.
  * Tied to the Touch button.
  */
-void EPD_chgconf_prev()
+void EPD_chgconf_next()
 {
     if (EPD_view_mode != VIEW_CHANGE_SETTINGS)
         return;
@@ -302,8 +303,22 @@ void EPD_chgconf_prev()
     if (pages[curpage].options[i].code < 0)
         i = 0;
     *(pages[curpage].indexvar) = i;
+    chgconf_changed = true;
 //Serial.print("index: ");
 //Serial.println(i);
+}
+
+void EPD_chgconf_prev()
+{
+    if (EPD_view_mode != VIEW_CHANGE_SETTINGS)
+        return;
+    int i = *(pages[curpage].indexvar);
+    if (i == 0) {
+        while (pages[curpage].options[i].code >= 0)
+            ++i;
+    }
+    *(pages[curpage].indexvar) = i-1;
+    chgconf_changed = true;
 }
 
 static void EPD_Draw_chgconf()
@@ -379,18 +394,23 @@ static void EPD_Draw_chgconf()
 
 void EPD_chgconf_loop()
 {
-  if (isTimeToEPD()) {
-      EPDTimeMarker = millis();
+  //if (isTimeToEPD()) {
+  //    EPDTimeMarker = millis();
+
 
       if (EPD_view_mode == VIEW_CHANGE_SETTINGS) {
           get_settings();
-          EPD_Draw_chgconf();
+          if (chgconf_changed) {
+              EPD_Draw_chgconf();
+              chgconf_changed = false;
+          }
 
       } else if (EPD_view_mode == VIEW_SAVE_SETTINGS) {
           Serial.println("SAVING SETTINGS...");
           EPD_chgconf_save();
           EPD_Message("SETTINGS", "SAVED");
           Serial.println("...SETTINGS SAVED");
+          delay(500);
           EPD_view_mode = VIEW_REBOOT;
 
       } else if (EPD_view_mode == VIEW_REBOOT) {
@@ -398,7 +418,7 @@ void EPD_chgconf_loop()
           reboot();
           Serial.println(F("This will never be printed."));
       }
-  }
+  //}
 }
 
 #endif /* USE_EPAPER */

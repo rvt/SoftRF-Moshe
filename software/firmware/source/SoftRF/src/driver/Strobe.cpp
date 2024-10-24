@@ -26,6 +26,7 @@ void  Strobe_fini()        {}
 #else
 
 #include "Strobe.h"
+#include "Buzzer.h"
 #include "EEPROM.h"
 #include "../TrafficHelper.h"
 
@@ -46,12 +47,29 @@ static int alarm_level = ALARM_LEVEL_NONE;
 
 void Strobe_setup(void)
 {
+#if defined(ESP32)
   if (settings->strobe == STROBE_OFF)
       return;
   StrobePauseMarker = millis();
-  StrobePin = STROBEPIN;
+  StrobePin = SOC_GPIO_PIN_STROBE;
+  if (settings->voice != VOICE_OFF) {
+      if (hw_info.model == SOFTRF_MODEL_PRIME_MK2 && hw_info.revision < 8) {
+          // (gpio15 not available on T-Beam v0.7)
+          settings->strobe = STROBE_OFF;
+          return;
+      }
+      StrobePin = SOC_GPIO_PIN_BUZZER2;   // use pin 15 instead
+      if (settings->volume != BUZZER_EXT)
+          settings->volume = BUZZER_OFF;
+  }
   if (StrobePin == SOC_UNUSED_PIN)
       return;
+  if (ESP32_pin_reserved(StrobePin, false, "Strobe"))
+      return;
+#else
+  settings->strobe = STROBE_OFF;
+  return;
+#endif
   pinMode(StrobePin, OUTPUT);
   StrobeState = false;
   StrobeTimeMarker = 0;
@@ -100,8 +118,8 @@ void Strobe_Start()
     if (settings->nmea_l || settings->nmea2_l) {
         snprintf_P(NMEABuffer, sizeof(NMEABuffer),
           PSTR("$PSRSF,%d*"), NMEAlevel);
-        NMEA_add_checksum(NMEABuffer, sizeof(NMEABuffer)-10);
-        NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, strlen(NMEABuffer), false);
+        unsigned int nmealen = NMEA_add_checksum();
+        NMEA_Outs(settings->nmea_l, settings->nmea2_l, NMEABuffer, nmealen, false);
     }
 }
 
@@ -176,8 +194,9 @@ void Strobe_loop(void)
 
 void Strobe_fini(void)
 {
-  digitalWrite(StrobePin, LOW);    // turns strobe off
-  StrobePauseMarker = 0;           // prevents new flashes
+  if (StrobePin != SOC_UNUSED_PIN)
+      digitalWrite(StrobePin, LOW);    // turns strobe off
+  StrobePauseMarker = 0;               // prevents new flashes
 }
 
 #endif /* EXCLUDE_STROBE */

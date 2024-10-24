@@ -75,7 +75,7 @@
 #define WIRE_FINI(bus)          { } /* AC 1.0.x has no Wire.end() */
 #endif
 
-#define LED_STATE_ON            HIGH  // State when LED is litted
+#define LED_STATE_ON            HIGH  // when LED is lit // actually differs between T-Beam 0.7 and 1.x
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 /* Adafruit_NeoPixel still has "flickering" issue of ESP32 caused by 1 ms scheduler */
@@ -138,30 +138,22 @@ extern Adafruit_NeoPixel strip;
                                   SOC_GPIO_PIN_TBEAM_LED_V02 :          \
                                   (hw_info.revision == 5 ?              \
                                     SOC_GPIO_PIN_TBEAM_LED_V05 :        \
-                                    ((hw_info.revision == 11 || hw_info.revision == 12) ?   \
+                                    ((hw_info.revision == 8 || hw_info.revision == 12) ?   \
                                       SOC_GPIO_PIN_TBEAM_LED_V11 :      \
                                       SOC_UNUSED_PIN))))
 
-#define SOC_GPIO_PIN_GNSS_PPS (hw_info.model == SOFTRF_MODEL_PRIME_MK3 ?  \
-                                SOC_GPIO_PIN_S3_GNSS_PPS :                \
-                                (hw_info.model == SOFTRF_MODEL_PRIME_MK2 ?\
-                                  ((hw_info.revision >= 8 || settings->ppswire) ? \
-                                    SOC_GPIO_PIN_TBEAM_V08_PPS :          \
-                                    SOC_UNUSED_PIN) :                     \
-                                  SOC_UNUSED_PIN))
+// #define SOC_GPIO_PIN_GNSS_PPS - replaced with GNSS.cpp get_pps_pin()
 
 #define SOC_GPIO_PIN_BUZZER   (hw_info.model == SOFTRF_MODEL_PRIME_MK2 ? 14 : SOC_UNUSED_PIN)
 #define SOC_GPIO_PIN_BUZZER2  (hw_info.model == SOFTRF_MODEL_PRIME_MK2 ? 15 : SOC_UNUSED_PIN)
 
-/* instead of 25 which is now used for voice: */
-#define SOC_GPIO_PIN_STROBE   (hw_info.model == SOFTRF_MODEL_PRIME_MK2 ? 33 : SOC_UNUSED_PIN)
+// cannot use pin 33 after all, need to share pin 25 with voice:
+#define SOC_GPIO_PIN_STROBE   (hw_info.model == SOFTRF_MODEL_PRIME_MK2 ? 25 : SOC_UNUSED_PIN)
 
 /* use DAC channel 1 for voice output (internal I2S) */
 #define SOC_GPIO_PIN_VOICE    (hw_info.model == SOFTRF_MODEL_PRIME_MK2 ? 25 : SOC_UNUSED_PIN)
 
 // GPIO pins for Serial inputs on T-Beam:
-// - not clear yet whether these pins can work
-//#define Serial0AltRxPin       13  // precludes use of 13 for I2C
 #define Serial0AltRxPin         36  // VP
 #define Serial2RxPin            39  // VN
 #define Serial2TxPin             4
@@ -489,6 +481,8 @@ struct rst_info {
 #endif /* USE_USB_HOST */
 #endif /* CONFIG_IDF_TARGET_ESP32S2 */
 
+#define USE_SD_CARD
+
 #define POWER_SAVING_WIFI_TIMEOUT 600000UL /* 10 minutes */
 
 //#define PMK2_SLEEP_MODE 1    // 0.6 mA : esp_deep_sleep_start()
@@ -505,11 +499,16 @@ struct rst_info {
 
 /* these functions should be reached via SoC_Ops instead, */
 /* as done in astir13 fork */
+bool ESP32_pin_reserved(uint8_t pin, bool shared, const char *label);
+void ESP32_pin_unreserve(uint8_t pin);
 bool ESP32_onExternalPower();
 void blue_LED_on();
 void blue_LED_off();
 void blue_LED_1hz();
 void blue_LED_4hz();
+
+// for experiment
+//extern bool button_pressed;
 
 #endif /* PLATFORM_ESP32_H */
 
