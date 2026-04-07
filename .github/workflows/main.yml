@@ -59,12 +59,8 @@ jobs:
           fi
           if [[ "$BOARD" =~ "esp32:esp32:" ]]; then
             arduino --pref "boardsmanager.additional.urls=https://github.com/espressif/arduino-esp32/releases/download/1.0.5/package_esp32_index.json" --save-prefs ;
-            arduino --install-boards esp32:esp32 ;
+            arduino --install-boards esp32:esp32:1.0.5 ;
             arduino --board $BOARD --save-prefs ;
-            cd $HOME/.arduino15/packages/esp32/hardware/esp32/1.0.5/tools/sdk/lib ;
-            rm -f libbt.a ;
-            cp $GITHUB_WORKSPACE/software/firmware/binaries/ESP32/misc/libbt.a . ;
-            cd $GITHUB_WORKSPACE ;
           fi
           if [[ "$BOARD" =~ "STM32:stm32:" ]]; then
             arduino --pref "boardsmanager.additional.urls=https://github.com/stm32duino/BoardManagerFiles/raw/07bcfb337e4c9abe83a029b39e33ddff5a6df2ef/STM32/package_stm_index.json" --save-prefs ;
