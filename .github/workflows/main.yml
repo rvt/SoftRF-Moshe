@@ -70,13 +70,9 @@ jobs:
           if [[ "$BOARD" =~ "energia:" ]]; then
             mkdir $HOME/Energia ;
             ln -s $PWD/software/firmware/source/libraries $HOME/Energia/libraries ;
-          else if [[ "$BOARD" =~ "raspberry" ]]; then
-              cd $GITHUB_WORKSPACE/software/firmware/source/libraries/bcm2835 ;
-              autoreconf -f ;
-            else
-              mkdir $HOME/Arduino ;
-              ln -s $PWD/software/firmware/source/libraries $HOME/Arduino/libraries ;
-            fi
+          else
+            mkdir $HOME/Arduino ;
+            ln -s $PWD/software/firmware/source/libraries $HOME/Arduino/libraries ;
           fi
           if [[ "$BOARD" =~ "esp8266:esp8266:" ]]; then
             arduino --pref "boardsmanager.additional.urls=https://github.com/esp8266/Arduino/releases/download/2.7.0/package_esp8266com_index.json" --save-prefs ;
