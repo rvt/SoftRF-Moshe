@@ -20,7 +20,7 @@ jobs:
 
     strategy:
       matrix:
-        board: ['esp8266:esp8266:nodemcuv2:xtal=80,eesz=4M3M', 'esp32:esp32:esp32:PartitionScheme=min_spiffs,CPUFreq=80,FlashMode=dio,FlashFreq=80,FlashSize=4M,DebugLevel=none', 'STM32:stm32:Nucleo_64', 'STM32:stm32:GenF1', 'energia:cc13xx:LAUNCHXL_CC1310', 'raspberry', 'CubeCell:CubeCell:CubeCell-GPS', 'adafruit:nrf52:pca10056']
+        board: ['esp8266:esp8266:nodemcuv2:xtal=80,eesz=4M3M', 'esp32:esp32:esp32:PartitionScheme=min_spiffs,CPUFreq=80,FlashMode=dio,FlashFreq=80,FlashSize=4M,DebugLevel=none', 'STM32:stm32:Nucleo_64', 'STM32:stm32:GenF1', 'energia:cc13xx:LAUNCHXL_CC1310', 'CubeCell:CubeCell:CubeCell-GPS', 'adafruit:nrf52:pca10056']
 
     env:
       ARDUINO_IDE_VERSION: 1.8.13
@@ -51,9 +51,7 @@ jobs:
             rm energia-$ENERGIA_IDE_VERSION-linux64.tar.xz ;
             sudo mv energia-$ENERGIA_IDE_VERSION /usr/local/share/energia ;
             sudo ln -s /usr/local/share/energia/energia /usr/local/bin/energia ;
-          else if [[ "$BOARD" =~ "raspberry" ]]; then
-              sudo apt-get install libsqlite3-dev libasound2-dev libsndfile1-dev ;
-            else
+          else
               wget http://downloads.arduino.cc/arduino-$ARDUINO_IDE_VERSION-linux64.tar.xz ;
               tar xf arduino-$ARDUINO_IDE_VERSION-linux64.tar.xz ;
               rm arduino-$ARDUINO_IDE_VERSION-linux64.tar.xz ;
@@ -184,14 +182,6 @@ jobs:
           fi ;
           if [[ "$BOARD" =~ "energia:cc13xx:"     ]]; then
             energia --verify --verbose-build --board $BOARD $PWD/software/firmware/source/UATbridge/UATbridge.ino ;
-          fi ;
-          if [[ "$BOARD" =~ "raspberry"           ]]; then
-            cd $GITHUB_WORKSPACE/software/firmware/source/SoftRF ;
-            make pi;
-          fi ;
-          if [[ "$BOARD" =~ "raspberry"           ]]; then
-            cd $GITHUB_WORKSPACE/software/firmware/source/SkyView ;
-            make -f Makefile.RPi ;
           fi ;
           if [[ "$BOARD" =~ "CubeCell:CubeCell:" ]]; then
             arduino --verify --verbose-build --board $BOARD $PWD/software/firmware/source/SoftRF/SoftRF.ino ;
